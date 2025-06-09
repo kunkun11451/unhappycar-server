@@ -1,0 +1,15 @@
+{
+  "name": "unhappycar-server",
+  "version": "1.0.0",
+  "description": "A WebSocket-based voting and room management server for UnhappyCar.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "uuid": "^9.1.0",
+    "ws": "^8.14.1"
+  },
+  "author": "kunkun11451",
+  "license": "MIT"
+}
