@@ -7,7 +7,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "uuid": "^9.1.0",
+    "uuid": "^8.3.2",
     "ws": "^8.14.1"
   },
   "author": "kunkun11451",
