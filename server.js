@@ -55,9 +55,14 @@ const sslOptions = {
   ca: fs.readFileSync("/etc/letsencrypt/live/socket.unhappycar.games/chain.pem"),
 };
 
+const rooms = {}; // 存储房间信息
+
 // 创建 HTTPS 服务器
 const server = https.createServer(sslOptions, (req, res) => {
   const parsedUrl = url.parse(req.url, true);
+  
+  // 记录所有 HTTP 请求
+  console.log(`HTTP ${req.method} ${req.url} - ${req.headers['user-agent'] || 'Unknown'} - IP: ${req.connection.remoteAddress || req.headers['x-forwarded-for'] || 'Unknown'}`);
   
   // 设置 CORS 头
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -73,6 +78,49 @@ const server = https.createServer(sslOptions, (req, res) => {
   
   if (parsedUrl.pathname === '/log') {
     handleLogRequest(req, res);
+  } else if (parsedUrl.pathname === '/') {
+    // 添加根路径处理
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UnhappyCar Server</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #1a1a1a; color: #fff; }
+        .container { max-width: 600px; margin: 0 auto; }
+        h1 { color: #4CAF50; margin-bottom: 30px; }
+        .status { background: #2d2d2d; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .links { margin: 30px 0; }
+        .links a { display: inline-block; margin: 10px; padding: 12px 24px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px; }
+        .links a:hover { background: #45a049; }
+        .info { color: #aaa; font-size: 14px; margin-top: 30px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚗 UnhappyCar Server</h1>
+        
+        <div class="status">
+            <h3>✅ 服务器正常运行</h3>
+            <p>WebSocket 连接和 HTTP 服务都已就绪</p>
+        </div>
+        
+        <div class="links">
+            <a href="/log">📊 查看服务器日志</a>
+        </div>
+        
+        <div class="info">
+            <p>🌐 WebSocket 地址: wss://socket.unhappycar.games</p>
+            <p>📝 服务器启动时间: ${new Date().toLocaleString('zh-CN')}</p>
+            <p>🔧 当前活跃房间数: ${Object.keys(rooms).length}</p>
+        </div>
+    </div>
+</body>
+</html>
+    `);
   } else {
     // 默认响应
     res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -335,8 +383,6 @@ function getFileSize() {
   }
 }
 const wss = new WebSocket.Server({ server });
-
-const rooms = {}; // 存储房间信息
 
 // 投票系统状态管理
 class VotingManager {
