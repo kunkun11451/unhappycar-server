@@ -5,16 +5,36 @@ const { v4: uuidv4 } = require("uuid");
 
 const PORT = process.env.PORT || 3000;
 
-// 加载 SSL 证书
-const sslOptions = {
-  cert: fs.readFileSync("/etc/letsencrypt/live/socket.unhappycar.games/fullchain.pem"),
-  key: fs.readFileSync("/etc/letsencrypt/live/socket.unhappycar.games/privkey.pem"),
-  ca: fs.readFileSync("/etc/letsencrypt/live/socket.unhappycar.games/chain.pem"),
-};
+// 带时间戳的日志函数（北京时间）
+function logWithTimestamp(message, ...args) {
+  const now = new Date();
+  const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1000); // 北京时间 UTC+8
+  const timestamp = beijingTime.toISOString().replace('T', ' ').replace('Z', '').substring(0, 19);
+  console.log(`[${timestamp}]`, message, ...args);
+}
 
-// 创建 HTTPS 服务器
-const server = https.createServer(sslOptions);
-const wss = new WebSocket.Server({ server });
+// 检查是否为本地测试环境
+const isLocalTest = process.env.NODE_ENV === 'development' || !fs.existsSync('/etc/letsencrypt/live/socket.unhappycar.games/fullchain.pem');
+
+let server, wss;
+
+if (isLocalTest) {
+  // 本地测试用 HTTP 服务器
+  logWithTimestamp('使用本地测试模式 (HTTP)');
+  const http = require("http");
+  server = http.createServer();
+  wss = new WebSocket.Server({ server });
+} else {
+  // 生产环境用 HTTPS 服务器
+  logWithTimestamp('使用生产环境模式 (HTTPS)');
+const sslOptions = {
+  cert: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/fullchain.pem"),
+  key: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/privkey.pem"),
+  ca: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/chain.pem"),
+};
+  server = https.createServer(sslOptions);
+  wss = new WebSocket.Server({ server });
+}
 
 const rooms = {}; // 存储房间信息
 
@@ -31,10 +51,9 @@ class VotingManager {
     this.result = null; // 投票结果
     this.isNewRound = false; // 标识是否是新轮投票开始
   }
-
   // 开始新的投票
   startVoting(missions, expectedPlayers) {
-    console.log(`房间 ${this.roomId} 开始新投票:`, missions);
+    logWithTimestamp(`房间 ${this.roomId} 开始新投票:`, missions);
     this.isActive = true;
     this.missions = missions;
     this.votes = {};
@@ -44,11 +63,10 @@ class VotingManager {
     this.isNewRound = true; // 标记为新轮开始
     return this.getVotingState();
   }
-
   // 设置玩家角色
   setPlayerRole(playerId, role) {
     this.playerRoles[playerId] = role;
-    console.log(`设置玩家 ${playerId} 角色为: ${role}`);
+    logWithTimestamp(`设置玩家 ${playerId} 角色为: ${role}`);
   }
   // 玩家投票
   vote(playerId, missionIndex) {
@@ -58,16 +76,14 @@ class VotingManager {
 
     if (missionIndex < 0 || missionIndex >= this.missions.length) {
       throw new Error('无效的投票选项');
-    }
-
-    console.log(`玩家 ${playerId} 投票选择事件 ${missionIndex}`);
+    }    logWithTimestamp(`玩家 ${playerId} 投票选择事件 ${missionIndex}`);
 
     // 取消之前的投票
     if (this.votes[playerId] !== undefined) {
       const prevIndex = this.votes[playerId];
       const prevWeight = this.getVoteWeight(playerId);
       this.voteResults[prevIndex] -= prevWeight;
-      console.log(`取消玩家 ${playerId} 之前的投票: 事件${prevIndex}, 权重${prevWeight}`);
+      logWithTimestamp(`取消玩家 ${playerId} 之前的投票: 事件${prevIndex}, 权重${prevWeight}`);
     }
 
     // 添加新投票
@@ -75,14 +91,14 @@ class VotingManager {
     const voteWeight = this.getVoteWeight(playerId);
     this.voteResults[missionIndex] += voteWeight;
 
-    console.log(`玩家 ${playerId} 新投票: 事件${missionIndex}, 权重${voteWeight}, 总票数${this.voteResults[missionIndex]}`);
+    logWithTimestamp(`玩家 ${playerId} 新投票: 事件${missionIndex}, 权重${voteWeight}, 总票数${this.voteResults[missionIndex]}`);
 
     // 在投票过程中，已经不是新轮开始了
     this.isNewRound = false;
 
     // 检查是否投票完成
     const completedVotes = Object.keys(this.votes).length;
-    console.log(`当前投票进度: ${completedVotes}/${this.expectedPlayers}`);
+    logWithTimestamp(`当前投票进度: ${completedVotes}/${this.expectedPlayers}`);
 
     if (completedVotes >= this.expectedPlayers) {
       this.finishVoting();
@@ -95,10 +111,9 @@ class VotingManager {
   getVoteWeight(playerId) {
     return this.playerRoles[playerId] === 'host' ? 2 : 1;
   }
-
   // 完成投票
   finishVoting() {
-    console.log(`房间 ${this.roomId} 投票完成，结果:`, this.voteResults);
+    logWithTimestamp(`房间 ${this.roomId} 投票完成，结果:`, this.voteResults);
     
     this.isActive = false;
     
@@ -120,7 +135,7 @@ class VotingManager {
     } else {
       // 平票时随机选择
       selectedIndex = winners[Math.floor(Math.random() * winners.length)];
-      console.log(`平票情况，随机选择: ${selectedIndex}`);
+      logWithTimestamp(`平票情况，随机选择: ${selectedIndex}`);
     }
 
     this.result = {
@@ -130,15 +145,14 @@ class VotingManager {
       selectedMission: this.missions[selectedIndex]
     };
 
-    console.log(`投票结果:`, this.result);
+    logWithTimestamp(`投票结果:`, this.result);
   }
   // 强制结算投票（主持人手动结算）
   forceFinishVoting() {
     if (!this.isActive) {
       throw new Error('当前没有进行中的投票');
     }
-    
-    console.log(`房间 ${this.roomId} 强制结算投票，当前投票结果:`, this.voteResults);
+      logWithTimestamp(`房间 ${this.roomId} 强制结算投票，当前投票结果:`, this.voteResults);
     
     // 检查是否有任何投票
     const validVotes = Object.values(this.voteResults).filter(v => v > 0);
@@ -149,7 +163,7 @@ class VotingManager {
     // 直接调用finishVoting进行结算
     this.finishVoting();
     
-    console.log(`房间 ${this.roomId} 强制结算完成，结果:`, this.result);
+    logWithTimestamp(`房间 ${this.roomId} 强制结算完成，结果:`, this.result);
     return this.getVotingState();  }
 
   // 移除玩家投票（当玩家离开房间时调用）
@@ -166,21 +180,19 @@ class VotingManager {
       
       // 从角色记录中移除该玩家
       delete this.playerRoles[playerId];
-      
-      console.log(`移除玩家 ${playerId} 的投票: 事件${missionIndex}, 权重${voteWeight}`);
-      console.log(`当前投票状态:`, { votes: this.votes, voteResults: this.voteResults });
+        logWithTimestamp(`移除玩家 ${playerId} 的投票: 事件${missionIndex}, 权重${voteWeight}`);
+      logWithTimestamp(`当前投票状态:`, { votes: this.votes, voteResults: this.voteResults });
     }
   }
   // 更新期望玩家数量（当玩家加入或离开时调用）
-  updateExpectedPlayers(newCount, room = null) {
-    if (this.isActive) {
+  updateExpectedPlayers(newCount, room = null) {    if (this.isActive) {
       const oldCount = this.expectedPlayers;
       this.expectedPlayers = newCount;
-      console.log(`房间 ${this.roomId} 投票期间玩家数量变化: ${oldCount} -> ${newCount}`);
+      logWithTimestamp(`房间 ${this.roomId} 投票期间玩家数量变化: ${oldCount} -> ${newCount}`);
       
       // 检查是否已经达到新的投票完成条件
       const completedVotes = Object.keys(this.votes).length;
-      console.log(`当前投票进度: ${completedVotes}/${this.expectedPlayers}`);
+      logWithTimestamp(`当前投票进度: ${completedVotes}/${this.expectedPlayers}`);
       
       // 广播投票状态更新（无论是否完成）
       if (room) {
@@ -204,12 +216,11 @@ class VotingManager {
             console.error(`发送投票状态给玩家 ${player.playerId} 失败:`, error);
           }
         });
-        
-        console.log('投票状态已广播');
+          logWithTimestamp('投票状态已广播');
       }
       
       if (completedVotes >= this.expectedPlayers && completedVotes > 0) {
-        console.log('玩家数量变化导致投票自动完成');
+        logWithTimestamp('玩家数量变化导致投票自动完成');
         this.finishVoting();
         
         // 再次广播投票完成状态
@@ -234,8 +245,7 @@ class VotingManager {
               console.error(`发送投票完成状态给玩家 ${player.playerId} 失败:`, error);
             }
           });
-          
-          console.log('投票完成状态已广播');
+            logWithTimestamp('投票完成状态已广播');
         }
       }
     }
@@ -259,18 +269,17 @@ class VotingManager {
     this.isActive = false;
     this.missions = [];
     this.votes = {};
-    this.voteResults = {};
-    this.result = null;
+    this.voteResults = {};    this.result = null;
     this.isNewRound = false;
-    console.log(`房间 ${this.roomId} 投票状态已重置`);
+    logWithTimestamp(`房间 ${this.roomId} 投票状态已重置`);
   }
 }
 
 wss.on("connection", (ws) => {
-  console.log("客户端已连接");
+  logWithTimestamp("客户端已连接");
 
   ws.on("message", (message) => {
-    console.log("收到消息:", message.toString());
+    logWithTimestamp("收到消息:", message.toString());
     try {
       const data = JSON.parse(message);
       
@@ -293,9 +302,8 @@ wss.on("connection", (ws) => {
           ws.send(JSON.stringify({
             type: "roomCreated",
             roomId: roomId
-          }));
-          
-          console.log(`房间创建成功: ${roomId}`);
+          }));          
+          logWithTimestamp(`房间创建成功: ${roomId}`);
           break;
 
         case "joinRoom":
@@ -313,11 +321,10 @@ wss.on("connection", (ws) => {
               roomId: data.roomId,
               playerId: playerId
             }));
-            
-            // 如果房间有游戏状态，立即发送给新加入的玩家
+              // 如果房间有游戏状态，立即发送给新加入的玩家
             if (room.state && Object.keys(room.state).length > 0) {
-              console.log('发送当前游戏状态给新加入的玩家');
-              ws.send(JSON.stringify({ 
+              logWithTimestamp('发送当前游戏状态给新加入的玩家');
+              ws.send(JSON.stringify({
                 type: "stateUpdated", 
                 state: room.state,
                 history: room.history || []
@@ -340,21 +347,18 @@ wss.on("connection", (ws) => {
             room.host.send(JSON.stringify(playerCountMessage));
             room.players.forEach((player) => {
               player.ws.send(JSON.stringify(playerCountMessage));            });
-            
-            // 更新投票系统的期望玩家数量
+              // 更新投票系统的期望玩家数量
             room.votingManager.updateExpectedPlayers(currentPlayerCount, room);
             
-            console.log(`玩家 ${playerId} 加入房间 ${data.roomId}`);
+            logWithTimestamp(`玩家 ${playerId} 加入房间 ${data.roomId}`);
           } else {
             ws.send(JSON.stringify({
               type: "error",
               message: room ? "房间已满，无法加入" : "房间不存在"
             }));
           }
-          break;
-
-        case "startVoting":
-          console.log(`开始投票请求，房间ID: ${data.roomId}`);
+          break;        case "startVoting":
+          logWithTimestamp(`开始投票请求，房间ID: ${data.roomId}`);
           const votingRoom = rooms[data.roomId];
           if (votingRoom && votingRoom.host === ws) {
             try {
@@ -391,10 +395,9 @@ wss.on("connection", (ws) => {
                   player.ws.send(JSON.stringify(startMessage));
                 } catch (error) {
                   console.error(`发送投票状态给玩家 ${player.playerId} 失败:`, error);
-                }
-              });
+                }              });
               
-              console.log('投票状态已广播给所有玩家');
+              logWithTimestamp('投票状态已广播给所有玩家');
               
             } catch (error) {
               console.error('开始投票失败:', error);
@@ -409,10 +412,8 @@ wss.on("connection", (ws) => {
               message: "房间不存在或您不是主持人"
             }));
           }
-          break;
-
-        case "submitVote":
-          console.log(`收到投票，房间ID: ${data.roomId}, 玩家: ${data.playerId}, 选择: ${data.missionIndex}`);
+          break;        case "submitVote":
+          logWithTimestamp(`收到投票，房间ID: ${data.roomId}, 玩家: ${data.playerId}, 选择: ${data.missionIndex}`);
           const voteRoom = rooms[data.roomId];
           if (voteRoom) {
             try {
@@ -438,10 +439,9 @@ wss.on("connection", (ws) => {
                   player.ws.send(JSON.stringify(syncMessage));
                 } catch (error) {
                   console.error(`同步投票状态给玩家 ${player.playerId} 失败:`, error);
-                }
-              });
+                }              });
               
-              console.log('投票状态已实时同步给所有玩家');
+              logWithTimestamp('投票状态已实时同步给所有玩家');
               
             } catch (error) {
               console.error('处理投票失败:', error);
@@ -456,17 +456,13 @@ wss.on("connection", (ws) => {
               message: "房间不存在"
             }));
           }
-          break;
-
-        case "updateState":
-          console.log(`更新状态请求，房间ID: ${data.roomId}`);
+          break;        case "updateState":
+          logWithTimestamp(`更新状态请求，房间ID: ${data.roomId}`);
           const updateRoom = rooms[data.roomId];
           if (updateRoom && updateRoom.host === ws) {
             updateRoom.state = data.state;
-            updateRoom.history = data.history || [];
-
-            // 广播最新状态，包括历史记录
-            console.log(`广播最新状态，房间ID: ${data.roomId}`);
+            updateRoom.history = data.history || [];            // 广播最新状态，包括历史记录
+            logWithTimestamp(`广播最新状态，房间ID: ${data.roomId}`);
             updateRoom.players.forEach((player) => {
               player.ws.send(
                 JSON.stringify({
@@ -474,15 +470,12 @@ wss.on("connection", (ws) => {
                   state: data.state,
                   history: data.history,
                 })
-              );
-            });
+              );            });
           } else {
-            console.log("更新状态失败：房间不存在或请求者不是主持人");
+            logWithTimestamp("更新状态失败：房间不存在或请求者不是主持人");
           }
-          break;
-
-        case "syncVote":
-          console.log(`同步投票状态，房间ID: ${data.roomId}`);
+          break;        case "syncVote":
+          logWithTimestamp(`同步投票状态，房间ID: ${data.roomId}`);
           const syncVoteRoom = rooms[data.roomId];
           if (syncVoteRoom) {
             // 保存投票状态到房间
@@ -495,10 +488,9 @@ wss.on("connection", (ws) => {
             const voteMessage = {
               type: "syncVote",
               voteData: data.voteData,
-              senderId: data.senderId
-            };
+              senderId: data.senderId            };
 
-            console.log('广播投票状态:', voteMessage);
+            logWithTimestamp('广播投票状态:', voteMessage);
 
             // 给主持人发送投票状态
             try {
@@ -513,15 +505,12 @@ wss.on("connection", (ws) => {
                 player.ws.send(JSON.stringify(voteMessage));
               } catch (error) {
                 console.error('发送投票状态给玩家失败:', error);
-              }
-            });
+              }            });
           } else {
-            console.log('投票状态同步失败：房间不存在');
+            logWithTimestamp('投票状态同步失败：房间不存在');
           }
-          break;
-
-        case "syncVotingResult":
-          console.log(`同步投票结果，房间ID: ${data.roomId}`);
+          break;        case "syncVotingResult":
+          logWithTimestamp(`同步投票结果，房间ID: ${data.roomId}`);
           const resultRoom = rooms[data.roomId];
           if (resultRoom) {
             // 清理投票状态，为下一轮投票做准备
@@ -530,10 +519,9 @@ wss.on("connection", (ws) => {
             // 广播投票结果给房间内所有玩家（包括主持人）
             const resultMessage = {
               type: "syncVotingResult",
-              resultData: data.resultData
-            };
+              resultData: data.resultData            };
 
-            console.log('广播投票结果:', resultMessage);
+            logWithTimestamp('广播投票结果:', resultMessage);
 
             try {
               resultRoom.host.send(JSON.stringify(resultMessage));
@@ -546,15 +534,13 @@ wss.on("connection", (ws) => {
                 player.ws.send(JSON.stringify(resultMessage));
               } catch (error) {
                 console.error('发送投票结果给玩家失败:', error);
-              }
-            });
+              }            });
           } else {
-            console.log('投票结果同步失败：房间不存在');
-          }          break;
+            logWithTimestamp('投票结果同步失败：房间不存在');
+          }break;
 
-        case "heartbeat":
-          // 处理心跳包，简单返回确认消息
-          console.log(`收到心跳包 - 玩家ID: ${data.playerId}, 房间ID: ${data.roomId}, 时间: ${new Date(data.timestamp).toLocaleTimeString()}`);
+        case "heartbeat":          // 处理心跳包，简单返回确认消息
+          logWithTimestamp(`收到心跳包 - 玩家ID: ${data.playerId}, 房间ID: ${data.roomId}, 时间: ${new Date(data.timestamp).toLocaleTimeString()}`);
           
           // 可选：返回心跳确认（通常心跳包不需要确认，只要连接正常即可）
           try {
@@ -566,10 +552,8 @@ wss.on("connection", (ws) => {
           } catch (error) {
             console.error('发送心跳确认失败:', error);
           }
-          break;
-
-        case "manualSettleVoting":
-          console.log(`主持人手动结算投票请求，房间ID: ${data.roomId}`);
+          break;        case "manualSettleVoting":
+          logWithTimestamp(`主持人手动结算投票请求，房间ID: ${data.roomId}`);
           const manualSettleRoom = rooms[data.roomId];
           if (manualSettleRoom && manualSettleRoom.host === ws) {
             try {
@@ -579,10 +563,9 @@ wss.on("connection", (ws) => {
               // 广播最终投票状态给所有玩家
               const finalMessage = {
                 type: "votingStateSync",
-                votingState: votingState
-              };
+                votingState: votingState              };
               
-              console.log('广播手动结算结果:', finalMessage);
+              logWithTimestamp('广播手动结算结果:', finalMessage);
               
               // 发送给主持人
               try {
@@ -597,10 +580,9 @@ wss.on("connection", (ws) => {
                   player.ws.send(JSON.stringify(finalMessage));
                 } catch (error) {
                   console.error(`发送手动结算结果给玩家 ${player.playerId} 失败:`, error);
-                }
-              });
+                }              });
               
-              console.log('手动结算投票完成');
+              logWithTimestamp('手动结算投票完成');
               
             } catch (error) {
               console.error('手动结算投票失败:', error);
@@ -615,10 +597,8 @@ wss.on("connection", (ws) => {
               message: "房间不存在或您不是主持人"
             }));
           }
-          break;
-
-        default:
-          console.log("未知消息类型:", data.type);
+          break;        default:
+          logWithTimestamp("未知消息类型:", data.type);
       }
     } catch (error) {
       console.error("处理消息时发生错误:", error);
@@ -628,9 +608,8 @@ wss.on("connection", (ws) => {
       }));
     }
   });
-
   ws.on("close", () => {
-    console.log("客户端断开连接");
+    logWithTimestamp("客户端断开连接");
     for (const roomId in rooms) {
       const room = rooms[roomId];
       if (room.host === ws) {
@@ -670,5 +649,5 @@ wss.on("connection", (ws) => {
 
 // 启动 HTTP 服务器
 server.listen(PORT, () => {
-  console.log(`服务器运行在端口 ${PORT}`);
+  logWithTimestamp(`服务器运行在端口 ${PORT}`);
 });
