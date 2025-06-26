@@ -13,20 +13,21 @@ function logWithTimestamp(message, ...args) {
   console.log(`[${timestamp}]`, message, ...args);
 }
 
-// 检查是否为本地测试环境
-const isLocalTest = process.env.NODE_ENV === 'development' || !fs.existsSync('/etc/letsencrypt/live/socket.unhappycar.games/fullchain.pem');
+// // 检查是否为本地测试环境
+// const isLocalTest = process.env.NODE_ENV === 'development' || !fs.existsSync('/etc/letsencrypt/live/socket.unhappycar.games/fullchain.pem');
 
-let server, wss;
+// let server, wss;
 
-if (isLocalTest) {
-  // 本地测试用 HTTP 服务器
-  logWithTimestamp('使用本地测试模式 (HTTP)');
-  const http = require("http");
-  server = http.createServer();
-  wss = new WebSocket.Server({ server });
-} else {
-  // 生产环境用 HTTPS 服务器
-  logWithTimestamp('使用生产环境模式 (HTTPS)');
+// if (isLocalTest) {
+//   // 本地测试用 HTTP 服务器
+//   logWithTimestamp('使用本地测试模式 (HTTP)');
+//   const http = require("http");
+//   server = http.createServer();
+//   wss = new WebSocket.Server({ server });
+// } else {
+//   // 生产环境用 HTTPS 服务器
+//   logWithTimestamp('使用生产环境模式 (HTTPS)');
+
 const sslOptions = {
   cert: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/fullchain.pem"),
   key: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/privkey.pem"),
@@ -34,7 +35,7 @@ const sslOptions = {
 };
   server = https.createServer(sslOptions);
   wss = new WebSocket.Server({ server });
-}
+// }
 
 const rooms = {}; // 存储房间信息
 
@@ -456,7 +457,28 @@ wss.on("connection", (ws) => {
               message: "房间不存在"
             }));
           }
-          break;        case "updateState":
+          break;
+
+        case "redstone_tech_submission":
+          // 处理赤石科技投稿
+          logWithTimestamp("=== 赤石科技投稿 ===");
+          logWithTimestamp(`投稿人: ${data.data.nickname}`);
+          logWithTimestamp(`投稿时间: ${data.data.timestamp}`);
+          logWithTimestamp(`投稿内容: ${data.data.thought}`);
+          logWithTimestamp(`用户代理: ${data.data.userAgent}`);
+          logWithTimestamp(`页面URL: ${data.data.url}`);
+          logWithTimestamp("==================");
+          
+          // 回复确认消息给客户端
+          ws.send(JSON.stringify({
+            type: "submission_received",
+            success: true,
+            message: "投稿已收到并记录到服务器日志",
+            timestamp: new Date().toISOString()
+          }));
+          break;
+
+        case "updateState":
           logWithTimestamp(`更新状态请求，房间ID: ${data.roomId}`);
           const updateRoom = rooms[data.roomId];
           if (updateRoom && updateRoom.host === ws) {
