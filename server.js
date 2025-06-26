@@ -25,8 +25,8 @@ function logWithTimestamp(message, ...args) {
 //   server = http.createServer();
 //   wss = new WebSocket.Server({ server });
 // } else {
-//   // 生产环境用 HTTPS 服务器
-//   logWithTimestamp('使用生产环境模式 (HTTPS)');
+  // 生产环境用 HTTPS 服务器
+  logWithTimestamp('使用生产环境模式 (HTTPS)');
 
 const sslOptions = {
   cert: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/fullchain.pem"),
@@ -286,7 +286,37 @@ wss.on("connection", (ws) => {
       
       switch (data.type) {
         case "createRoom":
-          const roomId = uuidv4().substring(0, 6).toUpperCase();
+          let roomId;
+          
+          // 检查是否有自定义房间码
+          if (data.customRoomId && typeof data.customRoomId === 'string') {
+            const customId = data.customRoomId.trim();
+            if (customId.length > 0 && customId.length <= 20) { // 限制长度在1-20个字符
+              // 检查房间码是否已存在
+              if (rooms[customId]) {
+                ws.send(JSON.stringify({
+                  type: "error",
+                  message: "房间码已存在，请选择其他房间码"
+                }));
+                break;
+              }
+              roomId = customId;
+              logWithTimestamp(`使用自定义房间码: ${roomId}`);
+            } else {
+              ws.send(JSON.stringify({
+                type: "error",
+                message: "房间码长度应为1-20个字符"
+              }));
+              break;
+            }
+          } else {
+            // 生成随机房间码
+            do {
+              roomId = uuidv4().substring(0, 6).toUpperCase();
+            } while (rooms[roomId]); // 确保房间码不重复
+            logWithTimestamp(`生成随机房间码: ${roomId}`);
+          }
+          
           rooms[roomId] = {
             host: ws,
             players: [],
