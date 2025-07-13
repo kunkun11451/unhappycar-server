@@ -513,7 +513,9 @@ wss.on("connection", (ws) => {
           const updateRoom = rooms[data.roomId];
           if (updateRoom && updateRoom.host === ws) {
             updateRoom.state = data.state;
-            updateRoom.history = data.history || [];            // 广播最新状态，包括历史记录
+            updateRoom.history = data.history || [];
+            updateRoom.characterHistory = data.characterHistory || []; // 保存角色历史
+            // 广播最新状态，包括历史记录
             logWithTimestamp(`广播最新状态，房间ID: ${data.roomId}`);
             updateRoom.players.forEach((player) => {
               player.ws.send(
@@ -521,6 +523,7 @@ wss.on("connection", (ws) => {
                   type: "stateUpdated",
                   state: data.state,
                   history: data.history,
+                  characterHistory: data.characterHistory,
                 })
               );            });
           } else {
