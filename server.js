@@ -509,14 +509,14 @@ wss.on("connection", (ws) => {
           break;
 
         case "updateState":
-          logWithTimestamp(`更新状态请求，房间ID: ${data.roomId}`);
+          // logWithTimestamp(`更新状态请求，房间ID: ${data.roomId}`);
           const updateRoom = rooms[data.roomId];
           if (updateRoom && updateRoom.host === ws) {
             updateRoom.state = data.state;
             updateRoom.history = data.history || [];
             updateRoom.characterHistory = data.characterHistory || []; // 保存角色历史
             // 广播最新状态，包括历史记录
-            logWithTimestamp(`广播最新状态，房间ID: ${data.roomId}`);
+            // logWithTimestamp(`广播最新状态，房间ID: ${data.roomId}`);
             updateRoom.players.forEach((player) => {
               player.ws.send(
                 JSON.stringify({
@@ -595,7 +595,7 @@ wss.on("connection", (ws) => {
           }break;
 
         case "heartbeat":          // 处理心跳包，简单返回确认消息
-          logWithTimestamp(`收到心跳包 - 玩家ID: ${data.playerId}, 房间ID: ${data.roomId}, 时间: ${new Date(data.timestamp).toLocaleTimeString()}`);
+          // logWithTimestamp(`收到心跳包 - 玩家ID: ${data.playerId}, 房间ID: ${data.roomId}, 时间: ${new Date(data.timestamp).toLocaleTimeString()}`);
           
           // 可选：返回心跳确认（通常心跳包不需要确认，只要连接正常即可）
           try {
