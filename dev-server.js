@@ -18,18 +18,18 @@ function logWithTimestamp(message, ...args) {
   console.log(`[${timestamp}]`, message, ...args);
 }
 
-// 检查是否为本地测试环境
-const isLocalTest = process.env.NODE_ENV === 'development' || !fs.existsSync('/etc/letsencrypt/live/socket.unhappycar.games/fullchain.pem');
+// // 检查是否为本地测试环境
+// const isLocalTest = process.env.NODE_ENV === 'development' || !fs.existsSync('/etc/letsencrypt/live/socket.unhappycar.games/fullchain.pem');
 
-let server, wss;
+// let server, wss;
 
-if (isLocalTest) {
-  // 本地测试用 HTTP 服务器
-  logWithTimestamp('使用本地测试模式 (HTTP)');
-  const http = require("http");
-  server = http.createServer();
-  wss = new WebSocket.Server({ server });
-} else {
+// if (isLocalTest) {
+//   // 本地测试用 HTTP 服务器
+//   logWithTimestamp('使用本地测试模式 (HTTP)');
+//   const http = require("http");
+//   server = http.createServer();
+//   wss = new WebSocket.Server({ server });
+// } else {
   // 生产环境用 HTTPS 服务器
   logWithTimestamp('使用生产环境模式 (HTTPS)');
 
@@ -40,7 +40,7 @@ const sslOptions = {
 };
   server = https.createServer(sslOptions);
   wss = new WebSocket.Server({ server });
-}
+// }
 
 const rooms = {}; // 存储房间信息
 
