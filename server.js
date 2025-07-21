@@ -2,6 +2,12 @@ const fs = require("fs");
 const https = require("https");
 const WebSocket = require("ws");
 const { v4: uuidv4 } = require("uuid");
+const vm = require('vm');
+
+const APPROVED_DIR = './approved_events';
+if (!fs.existsSync(APPROVED_DIR)) {
+  fs.mkdirSync(APPROVED_DIR);
+}
 
 const PORT = process.env.PORT || 3000;
 
@@ -285,6 +291,230 @@ wss.on("connection", (ws) => {
       const data = JSON.parse(message);
       
       switch (data.type) {
+        case "upload_event_library":
+          try {
+            const userLibrary = data.library;
+            if (!userLibrary || !userLibrary.uploaderName || !userLibrary.uploaderPin) {
+              throw new Error("无效的事件库格式，缺少必要信息。");
+            }
+
+            const uploaderName = userLibrary.uploaderName;
+            const uploaderPin = userLibrary.uploaderPin;
+            const fileName = `${uploaderName}.json`;
+            const filePath = require('path').join(APPROVED_DIR, fileName);
+
+            // Filter out default events
+            const extractObject = (content, varName) => {
+              try {
+                const sandbox = {};
+                vm.createContext(sandbox);
+                const scriptContent = content.replace(new RegExp(`^\\s*const\\s+${varName}\\s*=`), `sandbox.${varName} =`).replace(new RegExp(`window\\.${varName}\\s*=\\s*${varName};?`), '');
+                vm.runInContext(scriptContent, sandbox);
+                return sandbox[varName] || {};
+              } catch (e) {
+                try { return JSON.parse(content); } catch (jsonError) { console.error(`解析 ${varName} 失败:`, e, jsonError); return {}; }
+              }
+            };
+            let defaultMissions = {};
+            let defaultHardMissions = {};
+            if (fs.existsSync('./js/mission.js')) defaultMissions = extractObject(fs.readFileSync('./js/mission.js', 'utf-8'), 'mission');
+            if (fs.existsSync('./js/hardmission.js')) defaultHardMissions = extractObject(fs.readFileSync('./js/hardmission.js', 'utf-8'), 'hardmission');
+
+            const filterDefaultEvents = (events, defaultEvents) => {
+                const filtered = {};
+                for (const key in events) {
+                    if (!defaultEvents[key] || JSON.stringify(events[key]) !== JSON.stringify(defaultEvents[key])) {
+                        filtered[key] = events[key];
+                    }
+                }
+                return filtered;
+            };
+            
+            const finalLibrary = {
+                uploaderName: uploaderName,
+                uploaderPin: uploaderPin,
+                uploaderAvatar: userLibrary.uploaderAvatar,
+                personalEvents: filterDefaultEvents(userLibrary.personalEvents, defaultMissions),
+                teamEvents: filterDefaultEvents(userLibrary.teamEvents, defaultHardMissions)
+            };
+
+            if (fs.existsSync(filePath)) {
+              // Existing user, check PIN
+              const existingData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              if (existingData.uploaderPin === uploaderPin) {
+                // PIN matches, merge and update library, ensuring no content duplicates within the user's library
+                
+                // Helper to create a signature for an event object (ignoring keys like uploaderName etc.)
+                const createEventSignature = (event) => {
+                    const coreEvent = {
+                        内容: event.内容,
+                        placeholders: event.placeholders
+                    };
+                    return JSON.stringify(coreEvent);
+                };
+
+                const mergeEvents = (existingEvents, newEvents) => {
+                    const signatures = new Set(Object.values(existingEvents).map(createEventSignature));
+                    for (const title in newEvents) {
+                        const newEvent = newEvents[title];
+                        const signature = createEventSignature(newEvent);
+                        if (!signatures.has(signature)) {
+                            // Add if signature is new. We use the original title.
+                            // If title exists, it will be overwritten, which is fine for updates.
+                            existingEvents[title] = newEvent;
+                            signatures.add(signature);
+                        }
+                    }
+                };
+                
+                if (!existingData.personalEvents) existingData.personalEvents = {};
+                if (!existingData.teamEvents) existingData.teamEvents = {};
+
+                mergeEvents(existingData.personalEvents, finalLibrary.personalEvents);
+                mergeEvents(existingData.teamEvents, finalLibrary.teamEvents);
+
+                existingData.lastUpdated = new Date().toISOString();
+                existingData.uploaderAvatar = finalLibrary.uploaderAvatar; // Also update avatar
+
+                fs.writeFileSync(filePath, JSON.stringify(existingData, null, 2));
+                logWithTimestamp(`更新了用户 ${uploaderName} 的事件库 (增量)`);
+                ws.send(JSON.stringify({ type: "upload_success", message: "事件库更新成功！" }));
+              } else {
+                // PIN mismatch
+                logWithTimestamp(`用户 ${uploaderName} 的识别码不匹配`);
+                ws.send(JSON.stringify({ type: "pin_mismatch" }));
+              }
+            } else {
+              // New user
+              if (Object.keys(finalLibrary.personalEvents).length === 0 && Object.keys(finalLibrary.teamEvents).length === 0) {
+                ws.send(JSON.stringify({ type: "upload_success", message: "您分享的事件均已存在于默认库中，无需重复上传。" }));
+                return;
+              }
+              const timestamp = new Date().toISOString();
+              finalLibrary.firstUploaded = timestamp;
+              finalLibrary.lastUpdated = timestamp;
+              fs.writeFileSync(filePath, JSON.stringify(finalLibrary, null, 2));
+              logWithTimestamp(`为新用户 ${uploaderName} 创建了事件库`);
+              ws.send(JSON.stringify({ type: "upload_success", message: "新的分享已成功创建！" }));
+            }
+          } catch (e) {
+            logWithTimestamp("处理上传的事件库失败:", e);
+            ws.send(JSON.stringify({ type: "error", message: `上传失败: ${e.message}` }));
+          }
+          break;
+
+        case "get_shared_libraries":
+          try {
+            const allLibraries = fs.readdirSync(APPROVED_DIR)
+              .filter(file => file.endsWith('.json'))
+              .map(file => {
+                try {
+                  const content = fs.readFileSync(require('path').join(APPROVED_DIR, file), 'utf-8');
+                  return JSON.parse(content);
+                } catch (e) {
+                  logWithTimestamp(`加载或解析文件 ${file} 失败:`, e);
+                  return null;
+                }
+              })
+              .filter(lib => lib !== null)
+              .sort((a, b) => new Date(a.firstUploaded || 0) - new Date(b.firstUploaded || 0));
+
+            const combinedLibraries = {
+              personalEvents: {},
+              teamEvents: {}
+            };
+
+            allLibraries.forEach(library => {
+              const processEvents = (events, targetLibrary) => {
+                  for (const title in events) {
+                      if (Object.hasOwnProperty.call(events, title)) {
+                          const eventWithUploader = {
+                              ...events[title],
+                              uploaderName: library.uploaderName,
+                              uploaderAvatar: library.uploaderAvatar,
+                              originalTitle: title // Keep track of the original title
+                          };
+                          
+                          // Create a unique key to prevent overwrites from different users for the same event title
+                          let uniqueKey = title;
+                          let counter = 1;
+                          while (targetLibrary[uniqueKey]) {
+                              uniqueKey = `${title} (${counter++})`;
+                          }
+                          targetLibrary[uniqueKey] = eventWithUploader;
+                      }
+                  }
+              };
+
+              if (library.personalEvents) {
+                  processEvents(library.personalEvents, combinedLibraries.personalEvents);
+              }
+              if (library.teamEvents) {
+                  processEvents(library.teamEvents, combinedLibraries.teamEvents);
+              }
+            });
+
+            ws.send(JSON.stringify({ type: "shared_libraries_data", libraries: combinedLibraries }));
+            logWithTimestamp(`向客户端发送了 ${allLibraries.length} 个共享事件库的合并结果`);
+          } catch (e) {
+            logWithTimestamp("获取共享事件库失败:", e);
+            ws.send(JSON.stringify({ type: "error", message: "获取共享事件库失败" }));
+          }
+          break;
+
+        case "authenticate_sharer":
+          try {
+            const { uploaderName, uploaderPin } = data;
+            const fileName = `${uploaderName}.json`;
+            const filePath = require('path').join(APPROVED_DIR, fileName);
+
+            if (fs.existsSync(filePath)) {
+              const library = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              if (library.uploaderPin === uploaderPin) {
+                logWithTimestamp(`用户 ${uploaderName} 验证成功`);
+                ws.send(JSON.stringify({ type: "authentication_success", library: library }));
+              } else {
+                logWithTimestamp(`用户 ${uploaderName} 验证失败: 识别码错误`);
+                ws.send(JSON.stringify({ type: "authentication_failure" }));
+              }
+            } else {
+              logWithTimestamp(`用户 ${uploaderName} 验证失败: 用户不存在`);
+              ws.send(JSON.stringify({ type: "authentication_failure" }));
+            }
+          } catch (e) {
+            logWithTimestamp("验证分享者失败:", e);
+            ws.send(JSON.stringify({ type: "error", message: "验证失败" }));
+          }
+          break;
+
+        case "delete_shared_event":
+          try {
+            const { uploaderName, uploaderPin, eventTitle, eventType } = data;
+            const fileName = `${uploaderName}.json`;
+            const filePath = require('path').join(APPROVED_DIR, fileName);
+
+            if (fs.existsSync(filePath)) {
+              const library = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              if (library.uploaderPin === uploaderPin) {
+                const targetLibrary = eventType === 'personal' ? library.personalEvents : library.teamEvents;
+                if (targetLibrary && targetLibrary[eventTitle]) {
+                  delete targetLibrary[eventTitle];
+                  fs.writeFileSync(filePath, JSON.stringify(library, null, 2));
+                  logWithTimestamp(`用户 ${uploaderName} 删除了事件: ${eventTitle}`);
+                  ws.send(JSON.stringify({ type: "event_deleted_success" }));
+                }
+              } else {
+                 ws.send(JSON.stringify({ type: "authentication_failure" }));
+              }
+            } else {
+               ws.send(JSON.stringify({ type: "authentication_failure" }));
+            }
+          } catch (e) {
+            logWithTimestamp("删除共享事件失败:", e);
+            ws.send(JSON.stringify({ type: "error", message: "删除事件失败" }));
+          }
+          break;
+
         case "createRoom":
           let roomId;
           
@@ -509,14 +739,14 @@ wss.on("connection", (ws) => {
           break;
 
         case "updateState":
-          // logWithTimestamp(`更新状态请求，房间ID: ${data.roomId}`);
+          logWithTimestamp(`更新状态请求，房间ID: ${data.roomId}`);
           const updateRoom = rooms[data.roomId];
           if (updateRoom && updateRoom.host === ws) {
             updateRoom.state = data.state;
             updateRoom.history = data.history || [];
             updateRoom.characterHistory = data.characterHistory || []; // 保存角色历史
             // 广播最新状态，包括历史记录
-            // logWithTimestamp(`广播最新状态，房间ID: ${data.roomId}`);
+            logWithTimestamp(`广播最新状态，房间ID: ${data.roomId}`);
             updateRoom.players.forEach((player) => {
               player.ws.send(
                 JSON.stringify({
@@ -595,7 +825,7 @@ wss.on("connection", (ws) => {
           }break;
 
         case "heartbeat":          // 处理心跳包，简单返回确认消息
-          // logWithTimestamp(`收到心跳包 - 玩家ID: ${data.playerId}, 房间ID: ${data.roomId}, 时间: ${new Date(data.timestamp).toLocaleTimeString()}`);
+          logWithTimestamp(`收到心跳包 - 玩家ID: ${data.playerId}, 房间ID: ${data.roomId}, 时间: ${new Date(data.timestamp).toLocaleTimeString()}`);
           
           // 可选：返回心跳确认（通常心跳包不需要确认，只要连接正常即可）
           try {
