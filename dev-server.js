@@ -343,6 +343,8 @@ wss.on("connection", (ws) => {
               const existingData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (existingData.uploaderPin === uploaderPin) {
                 // PIN matches, update library
+                const timestamp = new Date().toISOString();
+                finalLibrary.lastUpdated = timestamp;
                 fs.writeFileSync(filePath, JSON.stringify(finalLibrary, null, 2));
                 logWithTimestamp(`更新了用户 ${uploaderName} 的事件库`);
                 ws.send(JSON.stringify({ type: "upload_success", message: "事件库更新成功！" }));
@@ -357,6 +359,9 @@ wss.on("connection", (ws) => {
                 ws.send(JSON.stringify({ type: "upload_success", message: "您分享的事件均已存在于默认库中，无需重复上传。" }));
                 return;
               }
+              const timestamp = new Date().toISOString();
+              finalLibrary.firstUploaded = timestamp;
+              finalLibrary.lastUpdated = timestamp;
               fs.writeFileSync(filePath, JSON.stringify(finalLibrary, null, 2));
               logWithTimestamp(`为新用户 ${uploaderName} 创建了事件库`);
               ws.send(JSON.stringify({ type: "upload_success", message: "新的分享已成功创建！" }));
@@ -369,66 +374,68 @@ wss.on("connection", (ws) => {
 
         case "get_shared_libraries":
           try {
-            const approvedFiles = fs.readdirSync(APPROVED_DIR)
-                .filter(file => file.endsWith('.json'))
-                .map(file => ({
-                    name: file,
-                    time: fs.statSync(require('path').join(APPROVED_DIR, file)).mtime.getTime()
-                }))
-                .sort((a, b) => a.time - b.time)
-                .map(file => file.name);
+            const allLibraries = fs.readdirSync(APPROVED_DIR)
+              .filter(file => file.endsWith('.json'))
+              .map(file => {
+                try {
+                  const content = fs.readFileSync(require('path').join(APPROVED_DIR, file), 'utf-8');
+                  return JSON.parse(content);
+                } catch (e) {
+                  logWithTimestamp(`加载或解析文件 ${file} 失败:`, e);
+                  return null;
+                }
+              })
+              .filter(lib => lib !== null)
+              .sort((a, b) => new Date(a.firstUploaded || 0) - new Date(b.firstUploaded || 0));
 
             const combinedLibraries = {
               personalEvents: {},
               teamEvents: {}
             };
-            const uniqueEvents = new Set();
+            const uniqueEvents = new Map();
 
-            approvedFiles.forEach(file => {
-              try {
-                const content = fs.readFileSync(require('path').join(APPROVED_DIR, file), 'utf-8');
-                const library = JSON.parse(content);
+            const processEvents = (events, uploaderName, uploaderAvatar, firstUploaded) => {
+              for (const title in events) {
+                if (events.hasOwnProperty(title)) {
+                  const event = events[title];
+                  const eventSignature = `${title}|${JSON.stringify(event.内容)}|${JSON.stringify(event.placeholders || {})}`;
 
-                const processEvents = (events, targetLibrary) => {
-                    for (const title in events) {
-                        if (events.hasOwnProperty(title)) {
-                            const event = events[title];
-                            const eventSignature = `${title}|${JSON.stringify(event.内容)}|${JSON.stringify(event.placeholders || {})}`;
-
-                            if (!uniqueEvents.has(eventSignature)) {
-                                uniqueEvents.add(eventSignature);
-                                
-                                let newTitle = title;
-                                // If title already exists but content is different, create a unique title
-                                if (targetLibrary.hasOwnProperty(title)) {
-                                    newTitle = `${title} (${library.uploaderName || '未知作者'})`;
-                                }
-
-                                targetLibrary[newTitle] = {
-                                    ...event,
-                                    originalTitle: title,
-                                    uploaderName: library.uploaderName,
-                                    uploaderAvatar: library.uploaderAvatar
-                                };
-                            }
-                        }
-                    }
-                };
-
-                if (library.personalEvents) {
-                    processEvents(library.personalEvents, combinedLibraries.personalEvents);
+                  if (!uniqueEvents.has(eventSignature)) {
+                    uniqueEvents.set(eventSignature, {
+                      event: {
+                        ...event,
+                        originalTitle: title,
+                        uploaderName: uploaderName,
+                        uploaderAvatar: uploaderAvatar
+                      },
+                      firstUploaded: firstUploaded
+                    });
+                  }
                 }
-                if (library.teamEvents) {
-                    processEvents(library.teamEvents, combinedLibraries.teamEvents);
-                }
+              }
+            };
 
-              } catch (e) {
-                logWithTimestamp(`加载共享事件库 ${file} 失败:`, e);
+            allLibraries.forEach(library => {
+              if (library.personalEvents) {
+                processEvents(library.personalEvents, library.uploaderName, library.uploaderAvatar, new Date(library.firstUploaded || 0));
+              }
+              if (library.teamEvents) {
+                processEvents(library.teamEvents, library.uploaderName, library.uploaderAvatar, new Date(library.firstUploaded || 0));
               }
             });
 
+            uniqueEvents.forEach(({ event }, signature) => {
+              const targetLibrary = allLibraries.find(lib => lib.personalEvents && lib.personalEvents[event.originalTitle]) ? combinedLibraries.personalEvents : combinedLibraries.teamEvents;
+              
+              let newTitle = event.originalTitle;
+              if (targetLibrary.hasOwnProperty(newTitle)) {
+                  newTitle = `${newTitle} (${event.uploaderName || '未知作者'})`;
+              }
+              targetLibrary[newTitle] = event;
+            });
+
             ws.send(JSON.stringify({ type: "shared_libraries_data", libraries: combinedLibraries }));
-            logWithTimestamp(`向客户端发送了 ${approvedFiles.length} 个共享事件库`);
+            logWithTimestamp(`向客户端发送了 ${allLibraries.length} 个共享事件库的合并结果`);
           } catch (e) {
             logWithTimestamp("获取共享事件库失败:", e);
             ws.send(JSON.stringify({ type: "error", message: "获取共享事件库失败" }));
@@ -798,7 +805,7 @@ wss.on("connection", (ws) => {
           }break;
 
         case "heartbeat":          // 处理心跳包，简单返回确认消息
-          logWithTimestamp(`收到心跳包 - 玩家ID: ${data.playerId}, 房间ID: ${data.roomId}, 时间: ${new Date(data.timestamp).toLocaleTimeString()}`);
+          // logWithTimestamp(`收到心跳包 - 玩家ID: ${data.playerId}, 房间ID: ${data.roomId}, 时间: ${new Date(data.timestamp).toLocaleTimeString()}`);
           
           // 可选：返回心跳确认（通常心跳包不需要确认，只要连接正常即可）
           try {
