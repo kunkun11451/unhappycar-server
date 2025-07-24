@@ -1,6 +1,5 @@
 const fs = require("fs");
 const http = require("http"); // 引入 http 模块
-const https = require("https");
 const WebSocket = require("ws");
 const { v4: uuidv4 } = require("uuid");
 const vm = require('vm');
@@ -21,48 +20,27 @@ function logWithTimestamp(message, ...args) {
   console.log(`[${timestamp}]`, message, ...args);
 }
 
-// 检查是否为本地测试环境
-const isLocalTest = process.env.NODE_ENV === 'development' || !fs.existsSync('/etc/letsencrypt/live/unhappycar.tech/fullchain.pem');
+// 1. 创建主 HTTP 服务器 (端口 3000, 用于 Nginx 代理)
+logWithTimestamp('创建主 HTTP 服务器 (端口 3000)');
+const mainServer = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('This is the main WebSocket server, accessible via Nginx proxy.');
+});
+const wss = new WebSocket.Server({ server: mainServer });
 
-let httpsServer, httpServer, wss, wssHttp;
+// 2. 创建备用 HTTP 服务器 (端口 3001, 用于直接连接)
+logWithTimestamp('创建备用 HTTP 服务器 (端口 3001)');
+const fallbackServer = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('This is a fallback WebSocket server.');
+});
+const wssFallback = new WebSocket.Server({ server: fallbackServer });
 
-if (isLocalTest) {
-  // 本地测试用 HTTP 服务器
-  logWithTimestamp('使用本地测试模式 (HTTP)');
-  httpServer = http.createServer();
-  wss = new WebSocket.Server({ server: httpServer });
-  
-  httpServer.listen(PORT, () => {
-    logWithTimestamp(`本地测试服务器运行在端口 ${PORT}`);
-  });
-
-} else {
-  // 生产环境用 HTTPS 和 HTTP 服务器
-  logWithTimestamp('使用生产环境模式 (HTTPS + HTTP)');
-
-  // 1. 创建 HTTPS 服务器 (主)
-  const sslOptions = {
-    cert: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/fullchain.pem"),
-    key: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/privkey.pem"),
-    ca: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/chain.pem"),
-  };
-  httpsServer = https.createServer(sslOptions);
-  wss = new WebSocket.Server({ server: httpsServer });
-
-  // 2. 创建 HTTP 服务器 (备用)
-  httpServer = http.createServer((req, res) => {
-    // 简单的响应，告知用户这是一个 WebSocket 备用服务器
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('This is a fallback WebSocket server. Please connect using a WebSocket client.');
-  });
-  wssHttp = new WebSocket.Server({ server: httpServer });
-
-  // 将主 WebSocket 服务器的连接处理逻辑附加到备用服务器上
-  wssHttp.on('connection', (ws, req) => {
-    logWithTimestamp('一个客户端通过备用 HTTP WebSocket 连接');
-    wss.emit('connection', ws, req);
-  });
-}
+// 将备用服务器的连接请求转发给主服务器处理，以共享连接逻辑
+wssFallback.on('connection', (ws, req) => {
+    logWithTimestamp('一个客户端通过备用 HTTP WebSocket (3001) 连接');
+    wss.emit('connection', ws, req); // 关键：重用主 wss 的事件处理器
+});
 
 const rooms = {}; // 存储房间信息
 
@@ -953,13 +931,11 @@ wss.on("connection", (ws) => {
   });
 });
 
-// 启动服务器
-if (!isLocalTest) {
-  httpsServer.listen(PORT, () => {
-    logWithTimestamp(`主 HTTPS 服务器运行在端口 ${PORT}`);
-  });
-  httpServer.listen(HTTP_PORT, () => {
-    logWithTimestamp(`备用 HTTP 服务器运行在端口 ${HTTP_PORT}`);
-  });
-}
-// 本地测试服务器的启动已在 isLocalTest 块中处理
+// 启动两个服务器
+mainServer.listen(PORT, () => {
+  logWithTimestamp(`主 WebSocket 服务器 (代理用) 运行在端口 ${PORT}`);
+});
+
+fallbackServer.listen(HTTP_PORT, () => {
+  logWithTimestamp(`备用 WebSocket 服务器 (直连用) 运行在端口 ${HTTP_PORT}`);
+});
