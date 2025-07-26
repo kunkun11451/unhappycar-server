@@ -20,7 +20,7 @@ function logWithTimestamp(message, ...args) {
 }
 
 // 检查是否为本地测试环境
-const isLocalTest = process.env.NODE_ENV === 'development' || !fs.existsSync('/etc/letsencrypt/live/unhappycar.tech/fullchain.pem');
+const isLocalTest = process.env.NODE_ENV === 'development' || !fs.existsSync('./ssl/fullchain.pem');
 
 let server, wss;
 
@@ -34,11 +34,11 @@ if (isLocalTest) {
   // 生产环境用 HTTPS 服务器
   logWithTimestamp('使用生产环境模式 (HTTPS)');
 
-const sslOptions = {
-  cert: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/fullchain.pem"),
-  key: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/privkey.pem"),
-  ca: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/chain.pem"),
-};
+  const sslOptions = {
+    cert: fs.readFileSync("./ssl/fullchain.pem"),
+    key: fs.readFileSync("./ssl/privkey.pem"),
+    ca: fs.readFileSync("./ssl/chain.pem"),
+  };
   server = https.createServer(sslOptions);
   wss = new WebSocket.Server({ server });
 }
