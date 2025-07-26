@@ -89,7 +89,8 @@ npm install
 #### 步骤 2: 申请 SSL 证书
 
 我们将使用 `Certbot` 和 `Nginx` 来申请免费的 Let's Encrypt SSL 证书。即使我们的 Node.js 服务自己处理 HTTPS，使用 Nginx 也是一个好习惯，它可以帮助我们更轻松地管理证书。
-
+> [!TIP]
+> 出现紫色背景的配置界面保持默认勾选（什么都不用做，直接按 `Enter` ）
 ```bash
 # 1. 安装 Nginx
 sudo apt update
