@@ -1,5 +1,5 @@
 const fs = require("fs");
-const http = require("http"); // 引入 http 模块
+const https = require("https");
 const WebSocket = require("ws");
 const { v4: uuidv4 } = require("uuid");
 const vm = require('vm');
@@ -9,8 +9,7 @@ if (!fs.existsSync(APPROVED_DIR)) {
   fs.mkdirSync(APPROVED_DIR);
 }
 
-const PORT = process.env.PORT || 3000;
-const HTTP_PORT = process.env.HTTP_PORT || 3001; // 备用 HTTP 服务器
+const PORT = process.env.PORT || 3000
 
 // 带时间戳的日志函数（北京时间）
 function logWithTimestamp(message, ...args) {
@@ -20,27 +19,29 @@ function logWithTimestamp(message, ...args) {
   console.log(`[${timestamp}]`, message, ...args);
 }
 
-// 1. 创建主 HTTP 服务器 (端口 3000, 用于 Nginx 代理)
-logWithTimestamp('创建主 HTTP 服务器 (端口 3000)');
-const mainServer = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('This is the main WebSocket server, accessible via Nginx proxy.');
-});
-const wss = new WebSocket.Server({ server: mainServer });
+// 检查是否为本地测试环境
+const isLocalTest = process.env.NODE_ENV === 'development' || !fs.existsSync('/etc/letsencrypt/live/unhappycar.tech/fullchain.pem');
 
-// 2. 创建备用 HTTP 服务器 (端口 3001, 用于直接连接)
-logWithTimestamp('创建备用 HTTP 服务器 (端口 3001)');
-const fallbackServer = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('This is a fallback WebSocket server.');
-});
-const wssFallback = new WebSocket.Server({ server: fallbackServer });
+let server, wss;
 
-// 将备用服务器的连接请求转发给主服务器处理，以共享连接逻辑
-wssFallback.on('connection', (ws, req) => {
-    logWithTimestamp('一个客户端通过备用 HTTP WebSocket (3001) 连接');
-    wss.emit('connection', ws, req); // 关键：重用主 wss 的事件处理器
-});
+if (isLocalTest) {
+  // 本地测试用 HTTP 服务器
+  logWithTimestamp('使用本地测试模式 (HTTP)');
+  const http = require("http");
+  server = http.createServer();
+  wss = new WebSocket.Server({ server });
+} else {
+  // 生产环境用 HTTPS 服务器
+  logWithTimestamp('使用生产环境模式 (HTTPS)');
+
+const sslOptions = {
+  cert: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/fullchain.pem"),
+  key: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/privkey.pem"),
+  ca: fs.readFileSync("/etc/letsencrypt/live/unhappycar.tech/chain.pem"),
+};
+  server = https.createServer(sslOptions);
+  wss = new WebSocket.Server({ server });
+}
 
 const rooms = {}; // 存储房间信息
 
@@ -302,39 +303,12 @@ wss.on("connection", (ws) => {
             const fileName = `${uploaderName}.json`;
             const filePath = require('path').join(APPROVED_DIR, fileName);
 
-            // Filter out default events
-            const extractObject = (content, varName) => {
-              try {
-                const sandbox = {};
-                vm.createContext(sandbox);
-                const scriptContent = content.replace(new RegExp(`^\\s*const\\s+${varName}\\s*=`), `sandbox.${varName} =`).replace(new RegExp(`window\\.${varName}\\s*=\\s*${varName};?`), '');
-                vm.runInContext(scriptContent, sandbox);
-                return sandbox[varName] || {};
-              } catch (e) {
-                try { return JSON.parse(content); } catch (jsonError) { console.error(`解析 ${varName} 失败:`, e, jsonError); return {}; }
-              }
-            };
-            let defaultMissions = {};
-            let defaultHardMissions = {};
-            if (fs.existsSync('./js/mission.js')) defaultMissions = extractObject(fs.readFileSync('./js/mission.js', 'utf-8'), 'mission');
-            if (fs.existsSync('./js/hardmission.js')) defaultHardMissions = extractObject(fs.readFileSync('./js/hardmission.js', 'utf-8'), 'hardmission');
-
-            const filterDefaultEvents = (events, defaultEvents) => {
-                const filtered = {};
-                for (const key in events) {
-                    if (!defaultEvents[key] || JSON.stringify(events[key]) !== JSON.stringify(defaultEvents[key])) {
-                        filtered[key] = events[key];
-                    }
-                }
-                return filtered;
-            };
-            
             const finalLibrary = {
                 uploaderName: uploaderName,
                 uploaderPin: uploaderPin,
                 uploaderAvatar: userLibrary.uploaderAvatar,
-                personalEvents: filterDefaultEvents(userLibrary.personalEvents, defaultMissions),
-                teamEvents: filterDefaultEvents(userLibrary.teamEvents, defaultHardMissions)
+                personalEvents: userLibrary.personalEvents || {},
+                teamEvents: userLibrary.teamEvents || {}
             };
 
             if (fs.existsSync(filePath)) {
@@ -931,11 +905,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-// 启动两个服务器
-mainServer.listen(PORT, () => {
-  logWithTimestamp(`主 WebSocket 服务器 (代理用) 运行在端口 ${PORT}`);
-});
-
-fallbackServer.listen(HTTP_PORT, () => {
-  logWithTimestamp(`备用 WebSocket 服务器 (直连用) 运行在端口 ${HTTP_PORT}`);
+// 启动 HTTP 服务器
+server.listen(PORT, () => {
+  logWithTimestamp(`服务器运行在端口 ${PORT}`);
 });
