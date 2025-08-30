@@ -9,7 +9,7 @@ if (!fs.existsSync(APPROVED_DIR)) {
   fs.mkdirSync(APPROVED_DIR);
 }
 
-const PORT = process.env.PORT || 3000
+const PORT = process.env.PORT || 11451
 
 // 带时间戳的日志函数（北京时间）
 function logWithTimestamp(message, ...args) {
