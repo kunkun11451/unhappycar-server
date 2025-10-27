@@ -843,6 +843,97 @@ wss.on("connection", (ws) => {
             logWithTimestamp('投票结果同步失败：房间不存在');
           }break;
 
+        case "chat_message":
+          logWithTimestamp(`收到聊天消息，房间ID: ${data.roomId}, 频道: ${data.channelId}, 玩家: ${data.playerId}`);
+          const chatRoom = rooms[data.roomId];
+          if (chatRoom) {
+            // 初始化聊天历史记录
+            if (!chatRoom.chatHistory) {
+              chatRoom.chatHistory = {};
+            }
+            if (!chatRoom.chatHistory[data.channelId]) {
+              chatRoom.chatHistory[data.channelId] = [];
+            }
+
+            // 保存消息到房间历史
+            const messageData = {
+              playerId: data.playerId,
+              playerName: data.playerName,
+              message: data.message,
+              timestamp: data.timestamp,
+              channelId: data.channelId
+            };
+            
+            chatRoom.chatHistory[data.channelId].push(messageData);
+
+            // 限制每个频道最多保存100条消息
+            if (chatRoom.chatHistory[data.channelId].length > 100) {
+              chatRoom.chatHistory[data.channelId] = chatRoom.chatHistory[data.channelId].slice(-100);
+            }
+
+            // 验证频道权限并广播消息
+            const channelPlayers = getChannelPlayers(data.channelId);
+            
+            const chatMessage = {
+              type: "chat_message",
+              channelId: data.channelId,
+              playerId: data.playerId,
+              playerName: data.playerName,
+              message: data.message,
+              timestamp: data.timestamp
+            };
+
+            // 给主持人发送（如果主持人有权限看到该频道）
+            const hostSeat = getPlayerSeat(chatRoom.host, chatRoom);
+            if (hostSeat && channelPlayers.includes(hostSeat)) {
+              try {
+                chatRoom.host.send(JSON.stringify(chatMessage));
+              } catch (error) {
+                console.error('发送聊天消息给主持人失败:', error);
+              }
+            }
+
+            // 给有权限的玩家发送
+            chatRoom.players.forEach((player) => {
+              const playerSeat = getPlayerSeat(player.ws, chatRoom);
+              if (playerSeat && channelPlayers.includes(playerSeat)) {
+                try {
+                  player.ws.send(JSON.stringify(chatMessage));
+                } catch (error) {
+                  console.error('发送聊天消息给玩家失败:', error);
+                }
+              }
+            });
+
+          } else {
+            logWithTimestamp('聊天消息发送失败：房间不存在');
+          }
+          break;
+
+        case "chat_history_request":
+          logWithTimestamp(`请求聊天历史，房间ID: ${data.roomId}, 玩家: ${data.playerId}`);
+          const historyRoom = rooms[data.roomId];
+          if (historyRoom && historyRoom.chatHistory) {
+            const playerSeat = getPlayerSeat(ws, historyRoom);
+            if (playerSeat) {
+              const visibleChannels = getPlayerVisibleChannels(playerSeat);
+              const filteredHistory = {};
+              
+              // 只返回玩家有权限看到的频道历史
+              visibleChannels.forEach(channelId => {
+                if (historyRoom.chatHistory[channelId]) {
+                  filteredHistory[channelId] = historyRoom.chatHistory[channelId];
+                }
+              });
+
+              ws.send(JSON.stringify({
+                type: "chat_history_response",
+                chatHistory: filteredHistory
+              }));
+            }
+          }
+          break;
+
         case "heartbeat":          // 处理心跳包，简单返回确认消息
           // logWithTimestamp(`收到心跳包 - 玩家ID: ${data.playerId}, 房间ID: ${data.roomId}, 时间: ${new Date(data.timestamp).toLocaleTimeString()}`);
           
@@ -974,3 +1065,51 @@ wss.on("connection", (ws) => {
 server.listen(PORT, () => {
   logWithTimestamp(`服务器运行在端口 ${PORT}`);
 });
+
+// 聊天系统辅助函数
+
+// 根据频道ID获取有权限的玩家座位
+function getChannelPlayers(channelId) {
+  const channelMap = {
+    '123': [1, 2, 3],  // 1P2P3P
+    '124': [1, 2, 4],  // 124
+    '134': [1, 3, 4],  // 134
+    '234': [2, 3, 4]   // 234
+  };
+  return channelMap[channelId] || [];
+}
+
+// 获取玩家的座位号（根据WebSocket连接）
+function getPlayerSeat(ws, room) {
+  // 检查是否是主持人
+  if (room.host === ws) {
+    // 主机需要从seats数组中找到自己的座位
+    // 这里需要和前端的座位选择逻辑配合
+    // 暂时返回1，实际应该根据座位选择来确定
+    return 1;
+  }
+  
+  // 查找玩家
+  const player = room.players.find(p => p.ws === ws);
+  if (player && room.seats) {
+    // 在seats数组中查找该玩家的座位
+    for (let i = 0; i < room.seats.length; i++) {
+      if (room.seats[i] === player.playerId) {
+        return i + 1; // 座位从1开始
+      }
+    }
+  }
+  
+  return null;
+}
+
+// 获取玩家可见的频道列表
+function getPlayerVisibleChannels(playerSeat) {
+  const channelMap = {
+    1: ['123', '124', '134'], // 1P
+    2: ['123', '124', '234'], // 2P  
+    3: ['123', '134', '234'], // 3P
+    4: ['124', '134', '234']  // 4P
+  };
+  return channelMap[playerSeat] || [];
+}
